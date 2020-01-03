@@ -5,7 +5,6 @@ import torch.nn.functional as F
 import numpy as np
 from allennlp.nn import util
 from transformers import BertModel, XLNetModel, XLNetForSequenceClassification, BertForSequenceClassification
-from torch.nn import Identity
 
 
 class FC(nn.Module):
@@ -129,7 +128,7 @@ class MHAtt(nn.Module):
         scores = torch.matmul(query, key.transpose(-2, -1)) / math.sqrt(d_k)
 
         if mask is not None:
-            scores = scores.masked_fill(mask, -1e9)
+            scores = scores.masked_fill(mask, -1e4)
 
         att_map = F.softmax(scores, dim=-1)
         att_map = self.dropout(att_map)
@@ -213,6 +212,34 @@ class GAEncoder(nn.Module):
         return x
 
 
+class CREncoder(nn.Module):
+    def __init__(self, hidden_size, head_num, ff_size, dropout, hidden_size_head, layers):
+        super(CREncoder, self).__init__()
+        self.embedding = nn.Embedding(2, hidden_size)
+        self.encoders = nn.ModuleList([SA(hidden_size=hidden_size, head_num=head_num, ff_size=ff_size,
+                                          dropout=dropout, hidden_size_head=hidden_size // head_num) for _ in range(layers)])
+
+    def forward(self, x, x_mask, y, y_mask):
+        t1_mask = torch.cat([x_mask, y_mask], -1)
+        t2_mask = torch.cat([x_mask, torch.zeros_like(y_mask)], -1)
+        mask = torch.cat([t1_mask.unsqueeze(1).repeat(1, x.shape[1], 1),
+                          t2_mask.unsqueeze(1).repeat(1, y.shape[1], 1)], 1)
+
+        emb_x = torch.zeros(x.shape[0], x.shape[1]).long().to(x.device)
+        emb_y = torch.ones(y.shape[0], y.shape[1]).long().to(y.device)
+        emb_x = self.embedding(emb_x)
+        emb_y = self.embedding(emb_y)
+
+        emb_representation = torch.cat([emb_x, emb_y], 1)
+
+        representation = torch.cat([x, y], 1) + emb_representation
+
+        for layer in self.encoders:
+            representation = layer(representation, (1 - mask).unsqueeze(1).byte())
+
+        return representation
+
+
 class NumGNN(nn.Module):
 
     def __init__(self, node_dim, iteration_steps=1):
@@ -227,15 +254,11 @@ class NumGNN(nn.Module):
         self._dd_node_fc_left = torch.nn.Linear(node_dim, node_dim, bias=False)
         self._dd_node_fc_right = torch.nn.Linear(node_dim, node_dim, bias=False)
 
-    def forward(self, d_node, graph):
+    def forward(self, d_node, greater_graph, smaller_graph):
         d_node_len = d_node.size(1)
 
-        diagmat = torch.diagflat(torch.ones(d_node.size(1), dtype=torch.long, device=d_node.device))
-        diagmat = diagmat.unsqueeze(0).expand(d_node.size(0), -1, -1)
-        dd_graph = 1 - diagmat
-
-        dd_graph_left = dd_graph * graph[:, :d_node_len, :d_node_len]
-        dd_graph_right = dd_graph * (1 - graph[:, :d_node_len, :d_node_len])
+        dd_graph_left = greater_graph  # [:, :d_node_len, :d_node_len]
+        dd_graph_right = smaller_graph  # [:, :d_node_len, :d_node_len]
 
         d_node_neighbor_num = dd_graph_left.sum(-1) + dd_graph_right.sum(-1)
         d_node_neighbor_num_mask = (d_node_neighbor_num >= 1).long()
@@ -269,84 +292,6 @@ class NumGNN(nn.Module):
             d_node = F.relu(self_d_node_info + agg_d_node_info)
 
         return d_node
-
-
-class SequenceSummary(nn.Module):
-    r""" Compute a single vector summary of a sequence hidden states according to various possibilities:
-        Args of the config class:
-            summary_type:
-                - 'last' => [default] take the last token hidden state (like XLNet)
-                - 'first' => take the first token hidden state (like Bert)
-                - 'mean' => take the mean of all tokens hidden states
-                - 'cls_index' => supply a Tensor of classification token position (GPT/GPT-2)
-                - 'attn' => Not implemented now, use multi-head attention
-            summary_use_proj: Add a projection after the vector extraction
-            summary_proj_to_labels: If True, the projection outputs to config.num_labels classes (otherwise to hidden_size). Default: False.
-            summary_activation: 'tanh' => add a tanh activation to the output, Other => no activation. Default
-            summary_first_dropout: Add a dropout before the projection and activation
-            summary_last_dropout: Add a dropout after the projection and activation
-    """
-
-    def __init__(self, config):
-        super(SequenceSummary, self).__init__()
-
-        self.summary_type = config.summary_type if hasattr(config, "summary_type") else "last"
-        if self.summary_type == "attn":
-            # We should use a standard multi-head attention module with absolute positional embedding for that.
-            # Cf. https://github.com/zihangdai/xlnet/blob/master/modeling.py#L253-L276
-            # We can probably just use the multi-head attention module of PyTorch >=1.1.0
-            raise NotImplementedError
-
-        self.summary = Identity()
-        if hasattr(config, "summary_use_proj") and config.summary_use_proj:
-            if hasattr(config, "summary_proj_to_labels") and config.summary_proj_to_labels and config.num_labels > 0:
-                num_classes = config.num_labels
-            else:
-                num_classes = config.hidden_size
-            self.summary = nn.Linear(config.hidden_size, num_classes)
-
-        self.activation = Identity()
-        if hasattr(config, "summary_activation") and config.summary_activation == "tanh":
-            self.activation = nn.Tanh()
-
-        self.first_dropout = Identity()
-        if hasattr(config, "summary_first_dropout") and config.summary_first_dropout > 0:
-            self.first_dropout = nn.Dropout(config.summary_first_dropout)
-
-        self.last_dropout = Identity()
-        if hasattr(config, "summary_last_dropout") and config.summary_last_dropout > 0:
-            self.last_dropout = nn.Dropout(config.summary_last_dropout)
-
-    def forward(self, hidden_states, cls_index=None):
-        """ hidden_states: float Tensor in shape [bsz, ..., seq_len, hidden_size], the hidden-states of the last layer.
-            cls_index: [optional] position of the classification token if summary_type == 'cls_index',
-                shape (bsz,) or more generally (bsz, ...) where ... are optional leading dimensions of hidden_states.
-                if summary_type == 'cls_index' and cls_index is None:
-                    we take the last token of the sequence as classification token
-        """
-        if self.summary_type == "last":
-            output = hidden_states[:, -1]
-        elif self.summary_type == "first":
-            output = hidden_states[:, 0]
-        elif self.summary_type == "mean":
-            output = hidden_states.mean(dim=1)
-        elif self.summary_type == "cls_index":
-            if cls_index is None:
-                cls_index = torch.full_like(hidden_states[..., :1, :], hidden_states.shape[-2] - 1, dtype=torch.long)
-            else:
-                cls_index = cls_index.unsqueeze(-1).unsqueeze(-1)
-                cls_index = cls_index.expand((-1,) * (cls_index.dim() - 1) + (hidden_states.size(-1),))
-            # shape of cls_index: (bsz, XX, 1, hidden_size) where XX are optional leading dim of hidden_states
-            output = hidden_states.gather(-2, cls_index).squeeze(-2)  # shape (bsz, XX, hidden_size)
-        elif self.summary_type == "attn":
-            raise NotImplementedError
-
-        output = self.first_dropout(output)
-        output = self.summary(output)
-        output = self.activation(output)
-        output = self.last_dropout(output)
-
-        return output
 
 
 class TableEncoder(nn.Module):
@@ -419,21 +364,25 @@ class Baseline2(nn.Module):
         #self.BASE = XLNetModel.from_pretrained(model_type)
         #self.sequence_summary = SequenceSummary(self.BASE.config)
         #self.FUSION = GAEncoder(dim, head, 4 * dim, dropout, dim // head, 3)
-        self.embedding = nn.Embedding(2, dim)
-        self.GA = GAEncoder(dim, head, 4 * dim, dropout, dim // head, 3)
-        self.SA = nn.Linear(dim, 1)
-        self.CLASSIFIER = nn.Linear(dim, label_num)
+        #self.embedding = nn.Embedding(2, dim)
+        self.biflow = SAEncoder(dim, head, 4 * dim, dropout, dim // head, 3)
+        #self.attention = SAEncoder(dim, head, 4 * dim, dropout, dim // head, 3)
+        self.classifier = nn.Linear(dim, label_num)
 
     def forward(self, forward_type, **kwargs):
         if forward_type == 'cell':
             outputs = self.BASE(**kwargs)[1]
             #pooled_output = self.sequence_summary(outputs)
-            return self.CLASSIFIER(outputs)
+            return self.classifier(outputs)
             # return self.BASE(**kwargs)[0]
         elif forward_type == 'row':
             outputs = self.BASE(**kwargs)
             return outputs
         elif forward_type == 'sa':
+            outputs = self.biflow(**kwargs)
+            #outputs = self.attention(**kwargs)
+            return self.classifier(outputs[:, 0])
+            """
             # Guided Attention
             output = self.GA(**kwargs)
             scores = self.SA(output).squeeze()
@@ -444,5 +393,35 @@ class Baseline2(nn.Module):
             pooled_output = torch.sum(att.unsqueeze(-1) * output, 1)
             outputs = self.CLASSIFIER(pooled_output)
             return outputs
+            """
+        else:
+            raise NotImplementedError
+
+
+class GNN(nn.Module):
+    def __init__(self, dim, head, model_type, label_num, layers=4, dropout=0.1, attention='self'):
+        super(GNN, self).__init__()
+        self.BASE = BertModel.from_pretrained(model_type)
+        if attention == 'self':
+            self.biflow = SAEncoder(dim, head, 4 * dim, dropout, dim // head, 3)
+        else:
+            self.biflow = CREncoder(dim, head, 4 * dim, dropout, dim // head, 3)
+        self.gnn = NumGNN(dim)
+        self.embedding = nn.Embedding(13, dim)
+        self.classifier = nn.Linear(dim, label_num)
+
+    def forward(self, forward_type, **kwargs):
+        if forward_type == 'row':
+            outputs = self.BASE(**kwargs)
+            return outputs
+        elif forward_type == 'gnn':
+            outputs = self.gnn(**kwargs)
+            return outputs
+        elif forward_type == 'emb':
+            outputs = self.embedding(kwargs['x'])
+            return outputs
+        elif forward_type == 'sa':
+            outputs = self.biflow(**kwargs)
+            return self.classifier(outputs[:, 0])
         else:
             raise NotImplementedError
