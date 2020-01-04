@@ -399,13 +399,13 @@ class Baseline2(nn.Module):
 
 
 class GNN(nn.Module):
-    def __init__(self, dim, head, model_type, label_num, layers=4, dropout=0.1, attention='self'):
+    def __init__(self, dim, head, model_type, label_num, layers=3, dropout=0.1, attention='self'):
         super(GNN, self).__init__()
         self.BASE = BertModel.from_pretrained(model_type)
         if attention == 'self':
-            self.biflow = SAEncoder(dim, head, 4 * dim, dropout, dim // head, 3)
+            self.biflow = SAEncoder(dim, head, 4 * dim, dropout, dim // head, layers)
         else:
-            self.biflow = CREncoder(dim, head, 4 * dim, dropout, dim // head, 3)
+            self.biflow = CREncoder(dim, head, 4 * dim, dropout, dim // head, layers)
         self.gnn = NumGNN(dim)
         self.embedding = nn.Embedding(13, dim)
         self.classifier = nn.Linear(dim, label_num)

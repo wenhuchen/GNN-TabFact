@@ -22,6 +22,7 @@ def parse_opt():
     parser = argparse.ArgumentParser()
     parser.add_argument('--dim', default=768, type=int, help="whether to train or test the model")
     parser.add_argument('--head', default=4, type=int, help="whether to train or test the model")
+    parser.add_argument('--layers', default=3, type=int, help="whether to train or test the model")
     parser.add_argument('--epochs', default=5, type=int, help="whether to train or test the model")
     parser.add_argument('--split', default=256, type=int, help="whether to train or test the model")
     parser.add_argument('--max_len', default=30, type=int, help="whether to train or test the model")
@@ -116,14 +117,15 @@ def forward_pass(table, example, model):
             # Masks
             mask = torch.zeros(len(token_ids), len(token_ids))
             start = 0
-            mask[start:start + len(stat_inp), :] = 1
+            #mask[start:start + len(stat_inp), :] = 1
+            mask[start:start + len(stat_inp), start:start + len(stat_inp)] = 1
             start += len(stat_inp)
 
             mask[start:start + len(tit_inp), start:start + len(tit_inp)] = 1
 
             start += len(tit_inp)
             for l in lengths:
-                mask[start:start + l, :len(stat_inp) + len(tit_inp)] = 1
+                #mask[start:start + l, :len(stat_inp) + len(tit_inp)] = 1
                 mask[start:start + l, start:start + l] = 1
                 start += l
             masks.append(mask)
@@ -156,19 +158,21 @@ def forward_pass(table, example, model):
         table_masks = []
         stat_masks = []
         for i in range(batch_size):
-            col_len = len(sub_cols[i])
             mask = []
             for j in range(tab_len):
-                for k in range(col_len):
-                    start, end = mapping[(i, j, k)]
-                    if start < representation.shape[1]:
-                        tmp = representation[i, start:end]
-                        tmp = torch.mean(tmp, 0)
-                        graph_representation[i][j][k] = tmp
-                        mask.append(1)
+                for k in range(max_len_col):
+                    if (i, j, k) in mapping:
+                        start, end = mapping[(i, j, k)]
+                        if start < representation.shape[1]:
+                            tmp = representation[i, start:end]
+                            tmp = torch.mean(tmp, 0)
+                            graph_representation[i][j][k] = tmp
+                            mask.append(1)
+                        else:
+                            mask.append(0)
                     else:
                         mask.append(0)
-            table_masks.append(mask + [0] * (max_len_col * tab_len - len(mask)))
+            table_masks.append(mask)
 
             start, end = mapping[(i, -1, -1)]
             stat_representation[i, start:end] = representation[i, start:end]
@@ -302,21 +306,24 @@ def forward_pass(table, example, model):
 
         max_len_col = max([len(_) for _ in sub_cols])
         graph_representation = torch.zeros(batch_size, tab_len, max_len_col, representation.shape[-1])
+
         table_masks = []
         for i in range(batch_size):
-            col_len = len(sub_cols[i])
             mask = []
             for j in range(tab_len):
-                for k in range(col_len):
-                    start, end = mapping[(i, j, k)]
-                    if start < representation.shape[1]:
-                        tmp = representation[i, start:end]
-                        tmp = torch.mean(tmp, 0)
-                        graph_representation[i][j][k] = tmp
-                        mask.append(1)
+                for k in range(max_len_col):
+                    if (i, j, k) in mapping:
+                        start, end = mapping[(i, j, k)]
+                        if start < representation.shape[1]:
+                            tmp = representation[i, start:end]
+                            tmp = torch.mean(tmp, 0)
+                            graph_representation[i][j][k] = tmp
+                            mask.append(1)
+                        else:
+                            mask.append(0)
                     else:
                         mask.append(0)
-            table_masks.append(mask + [0] * (max_len_col * tab_len - len(mask)))
+            table_masks.append(mask)
 
         table_masks = torch.tensor(table_masks)
         # Transpose to make column first, which becomes B x col x T x dim
@@ -374,7 +381,7 @@ if __name__ == "__main__":
 
     tokenizer = BertTokenizer.from_pretrained(args.model)
 
-    model = GNN(args.dim, args.head, args.model, 2, attention=args.attention)
+    model = GNN(args.dim, args.head, args.model, 2, layers=args.layers, attention=args.attention)
     model.to(device)
 
     if args.do_train:
