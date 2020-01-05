@@ -48,6 +48,8 @@ def parse_opt():
     parser.add_argument('--max_length', default=512, type=int, help='model to use')
     parser.add_argument('--max_batch_size', default=12, type=int, help='model to use')
     parser.add_argument('--id', default=1, type=int, help='model to use')
+    parser.add_argument('--no_numeric', default=False, action='store_true', help='model to use')
+    parser.add_argument('--attr', default=False, action='store_true', help='model to use')
     parser.add_argument('--attention', default='cross', type=str,
                         help='the attention used for interaction between statement and table')
     args = parser.parse_args()
@@ -73,7 +75,7 @@ def forward_pass(table, example, model):
 
     tab_len = len(table)
     batch_size = len(statements)
-    if args.encoding == 'gnn':
+    if 'gnn' in args.encoding:
         texts = []
         segs = []
         masks = []
@@ -117,15 +119,18 @@ def forward_pass(table, example, model):
             # Masks
             mask = torch.zeros(len(token_ids), len(token_ids))
             start = 0
-            #mask[start:start + len(stat_inp), :] = 1
-            mask[start:start + len(stat_inp), start:start + len(stat_inp)] = 1
+            if args.encoding == 'gnn_ind':
+                mask[start:start + len(stat_inp), start:start + len(stat_inp)] = 1
+            else:
+                mask[start:start + len(stat_inp), :] = 1
             start += len(stat_inp)
 
             mask[start:start + len(tit_inp), start:start + len(tit_inp)] = 1
 
             start += len(tit_inp)
             for l in lengths:
-                #mask[start:start + l, :len(stat_inp) + len(tit_inp)] = 1
+                if args.encoding != 'gnn_ind':
+                    mask[start:start + l, :len(stat_inp) + len(tit_inp)] = 1
                 mask[start:start + l, start:start + l] = 1
                 start += l
             masks.append(mask)
@@ -180,38 +185,43 @@ def forward_pass(table, example, model):
 
         stat_representation = stat_representation.to(device)
         # Transpose to make column first, which becomes B x col x T x dim
-        graph_representation = graph_representation.transpose(
-            1, 2).contiguous().view(-1, tab_len, graph_representation.shape[-1])
+        if not args.no_numeric:
+            pre_trained = torch.load('masks/{}.bin'.format(f))
+            greater_masks = pre_trained['g']
+            smaller_masks = pre_trained['s']
+            m_matrix = pre_trained['m']  # model('emb', x=pre_trained['m'].long().to(device))
+            c_matrix = pre_trained['c']  # model('emb', x=pre_trained['c'].long().to(device))
 
-        pre_trained = torch.load('masks/{}.bin'.format(f))
-        greater_masks = pre_trained['g']
-        smaller_masks = pre_trained['s']
-        m_matrix = pre_trained['m']  # model('emb', x=pre_trained['m'].long().to(device))
-        c_matrix = pre_trained['c']  # model('emb', x=pre_trained['c'].long().to(device))
+            graph_masks_greater = torch.zeros(batch_size, max_len_col, tab_len, tab_len)
+            graph_masks_smaller = torch.zeros(batch_size, max_len_col, tab_len, tab_len)
+            graph_representation_m = torch.zeros(batch_size, tab_len, max_len_col)
+            graph_representation_c = torch.zeros(batch_size, tab_len, max_len_col)
+            for i in range(batch_size):
+                for j in range(max_len_col):
+                    if j < len(sub_cols[i]):
+                        graph_masks_greater[i][j] = greater_masks[sub_cols[i][j]]
+                        graph_masks_smaller[i][j] = smaller_masks[sub_cols[i][j]]
+                        graph_representation_m[i, :, j] = m_matrix[:, sub_cols[i][j]]
+                        graph_representation_c[i, :, j] = c_matrix[:, sub_cols[i][j]]
 
-        graph_masks_greater = torch.zeros(batch_size, max_len_col, tab_len, tab_len)
-        graph_masks_smaller = torch.zeros(batch_size, max_len_col, tab_len, tab_len)
-        graph_representation_m = torch.zeros(batch_size, tab_len, max_len_col)
-        graph_representation_c = torch.zeros(batch_size, tab_len, max_len_col)
-        for i in range(batch_size):
-            for j in range(max_len_col):
-                if j < len(sub_cols[i]):
-                    graph_masks_greater[i][j] = greater_masks[sub_cols[i][j]]
-                    graph_masks_smaller[i][j] = smaller_masks[sub_cols[i][j]]
-                    graph_representation_m[i, :, j] = m_matrix[:, sub_cols[i][j]]
-                    graph_representation_c[i, :, j] = c_matrix[:, sub_cols[i][j]]
+            graph_representation = graph_representation.transpose(
+                1, 2).contiguous().view(-1, tab_len, graph_representation.shape[-1])
 
-        inputs = {'d_node': graph_representation.to(device),
-                  'greater_graph': graph_masks_greater.view(-1, tab_len, tab_len).to(device),
-                  'smaller_graph': graph_masks_smaller.view(-1, tab_len, tab_len).to(device)}
-        graph_representation = model('gnn', **inputs)
-        graph_representation = graph_representation.transpose(1, 2).contiguous().view(
-            len(statements), -1, graph_representation.shape[-1]).to(device)
+            inputs = {'d_node': graph_representation.to(device),
+                      'greater_graph': graph_masks_greater.view(-1, tab_len, tab_len).to(device),
+                      'smaller_graph': graph_masks_smaller.view(-1, tab_len, tab_len).to(device)}
+            graph_representation = model('gnn', **inputs)
 
-        graph_representation_m = model('emb', x=graph_representation_m.view(batch_size, -1).long().to(device))
-        graph_representation_c = model('emb', x=graph_representation_c.view(batch_size, -1).long().to(device))
+            graph_representation = graph_representation.transpose(1, 2).contiguous().view(
+                len(statements), -1, graph_representation.shape[-1])
 
-        graph_representation = graph_representation + graph_representation_m + graph_representation_c
+            if args.attr:
+                graph_representation_m = model('emb', x=graph_representation_m.view(batch_size, -1).long().to(device))
+                graph_representation_c = model('emb', x=graph_representation_c.view(batch_size, -1).long().to(device))
+                graph_representation = graph_representation + graph_representation_m + graph_representation_c
+        else:
+            graph_representation = graph_representation.view(batch_size, -1, graph_representation.shape[-1]).to(device)
+
         if args.attention == 'self':
             x_masks = torch.cat([torch.tensor(stat_masks), torch.tensor(table_masks)], 1).to(device)
             representation = torch.cat([stat_representation, graph_representation], 1)
@@ -220,153 +230,6 @@ def forward_pass(table, example, model):
         elif args.attention == 'cross':
             inputs = {'x': stat_representation, 'x_mask': torch.tensor(stat_masks).to(device),
                       'y': graph_representation, 'y_mask': torch.tensor(table_masks).to(device)}
-            logits = model('sa', **inputs)
-    elif args.encoding == 'gnn_ind':
-        stats = []
-        texts = []
-        segs = []
-        masks = []
-        mapping = {}
-        cur_index = 0
-        for sub_col, stat in zip(sub_cols, statements):
-            table_inp = []
-            lengths = []
-
-            stats.append(tokenizer.encode('[CLS] ' + stat))
-
-            tit_inp = tokenizer.tokenize('title is : ' + title + ' .')
-            prev_position = position = len(tit_inp)
-            for i in range(len(table)):
-                tmp = tokenizer.tokenize('row {} is : '.format(i + 1))
-                table_inp.extend(tmp)
-                position += len(tmp)
-
-                entry = table.iloc[i]
-                for j, col in enumerate(sub_col):
-                    tmp = tokenizer.tokenize('{} is {} , '.format(cols[col], entry[col]))
-                    mapping[(cur_index, i, j)] = (position, position + len(tmp))
-                    table_inp.extend(tmp)
-                    position += len(tmp)
-
-                lengths.append(position - prev_position)
-                prev_position = position
-
-            # Tokens
-            tokens = tit_inp + table_inp
-            tokens = tokens[:args.max_length]
-            token_ids = tokenizer.convert_tokens_to_ids(tokens)
-            texts.append(token_ids)
-
-            # Segment Ids
-            seg = [0] * len(tit_inp) + [1] * len(table_inp)
-            seg = seg[:args.max_length]
-            segs.append(seg)
-
-            # Masks
-            mask = torch.zeros(len(token_ids), len(token_ids))
-            start = 0
-            mask[start:start + len(tit_inp), start:start + len(tit_inp)] = 1
-
-            start += len(tit_inp)
-            for l in lengths:
-                mask[start:start + l, :len(tit_inp)] = 1
-                mask[start:start + l, start:start + l] = 1
-                start += l
-            masks.append(mask)
-            cur_index += 1
-
-        # For the statements
-        max_len = max([len(_) for _ in stats])
-        stat_masks = []
-        for i in range(len(stats)):
-            # Padding the mask
-            stat_masks.append([1] * len(stats[i]) + [0] * (max_len - len(stats[i])))
-            stats[i] = stats[i] + [tokenizer.pad_token_id] * (max_len - len(stats[i]))
-
-        # Transform into tensor vectors
-        stat_masks = torch.tensor(stat_masks)
-        stat_representation = model('row', input_ids=torch.tensor(stats).to(device),
-                                    attention_mask=(1 - stat_masks).byte().to(device))[0]
-
-        # For the table
-        max_len = max([len(_) for _ in texts])
-        for i in range(len(texts)):
-            # Padding the mask
-            tmp = torch.zeros(max_len, max_len)
-            tmp[:masks[i].shape[0], :masks[i].shape[1]] = masks[i]
-            masks[i] = tmp.unsqueeze(0)
-            # Padding the Segmentation
-            segs[i] = segs[i] + [0] * (max_len - len(segs[i]))
-            texts[i] = texts[i] + [tokenizer.pad_token_id] * (max_len - len(texts[i]))
-
-        # Transform into tensor vectors
-        representation = model('row', input_ids=torch.tensor(texts).to(device),
-                               attention_mask=torch.cat(masks, 0).to(device),
-                               token_type_ids=torch.tensor(segs).to(device))[0]
-
-        max_len_col = max([len(_) for _ in sub_cols])
-        graph_representation = torch.zeros(batch_size, tab_len, max_len_col, representation.shape[-1])
-
-        table_masks = []
-        for i in range(batch_size):
-            mask = []
-            for j in range(tab_len):
-                for k in range(max_len_col):
-                    if (i, j, k) in mapping:
-                        start, end = mapping[(i, j, k)]
-                        if start < representation.shape[1]:
-                            tmp = representation[i, start:end]
-                            tmp = torch.mean(tmp, 0)
-                            graph_representation[i][j][k] = tmp
-                            mask.append(1)
-                        else:
-                            mask.append(0)
-                    else:
-                        mask.append(0)
-            table_masks.append(mask)
-
-        table_masks = torch.tensor(table_masks)
-        # Transpose to make column first, which becomes B x col x T x dim
-        graph_representation = graph_representation.transpose(
-            1, 2).contiguous().view(-1, tab_len, graph_representation.shape[-1])
-
-        pre_trained = torch.load('masks/{}.bin'.format(f))
-        greater_masks = pre_trained['g']
-        smaller_masks = pre_trained['s']
-        m_matrix = pre_trained['m']
-        c_matrix = pre_trained['c']
-
-        graph_masks_greater = torch.zeros(batch_size, max_len_col, tab_len, tab_len)
-        graph_masks_smaller = torch.zeros(batch_size, max_len_col, tab_len, tab_len)
-        graph_representation_m = torch.zeros(batch_size, tab_len, max_len_col)
-        graph_representation_c = torch.zeros(batch_size, tab_len, max_len_col)
-        for i in range(batch_size):
-            for j in range(max_len_col):
-                if j < len(sub_cols[i]):
-                    graph_masks_greater[i][j] = greater_masks[sub_cols[i][j]]
-                    graph_masks_smaller[i][j] = smaller_masks[sub_cols[i][j]]
-                    graph_representation_m[i, :, j] = m_matrix[:, sub_cols[i][j]]
-                    graph_representation_c[i, :, j] = c_matrix[:, sub_cols[i][j]]
-
-        inputs = {'d_node': graph_representation.to(device),
-                  'greater_graph': graph_masks_greater.view(-1, tab_len, tab_len).to(device),
-                  'smaller_graph': graph_masks_smaller.view(-1, tab_len, tab_len).to(device)}
-        graph_representation = model('gnn', **inputs)
-        graph_representation = graph_representation.transpose(1, 2).contiguous().view(
-            len(statements), -1, graph_representation.shape[-1]).to(device)
-
-        graph_representation_m = model('emb', x=graph_representation_m.view(batch_size, -1).long().to(device))
-        graph_representation_c = model('emb', x=graph_representation_c.view(batch_size, -1).long().to(device))
-
-        graph_representation = graph_representation + graph_representation_m + graph_representation_c
-        if args.attention == 'self':
-            x_masks = torch.cat([stat_masks, table_masks], 1).to(device)
-            representation = torch.cat([stat_representation, graph_representation], 1)
-            inputs = {'x': representation.to(device), 'x_mask': (1 - x_masks).unsqueeze(1).unsqueeze(2).byte()}
-            logits = model('sa', **inputs)
-        elif args.attention == 'cross':
-            inputs = {'x': stat_representation, 'x_mask': stat_masks.to(device),
-                      'y': graph_representation, 'y_mask': table_masks.to(device)}
             logits = model('sa', **inputs)
     else:
         raise NotImplementedError
@@ -379,14 +242,14 @@ def forward_pass(table, example, model):
 if __name__ == "__main__":
     args = parse_opt()
 
-    tokenizer = BertTokenizer.from_pretrained(args.model)
+    config = BertConfig.from_pretrained(args.model, cache_dir='tmp/')
+    tokenizer = BertTokenizer.from_pretrained(args.model, cache_dir='tmp/')
 
-    model = GNN(args.dim, args.head, args.model, 2, layers=args.layers, attention=args.attention)
+    model = GNN(args.dim, args.head, args.model, config, 2, layers=args.layers, attention=args.attention)
     model.to(device)
 
     if args.do_train:
         # Create the folder for the saving the intermediate files
-        args.output_dir = '{}_{}'.format(args.output_dir, args.id)
         if not os.path.exists(args.output_dir):
             os.makedirs(args.output_dir)
 

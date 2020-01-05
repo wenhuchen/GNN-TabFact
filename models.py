@@ -5,6 +5,7 @@ import torch.nn.functional as F
 import numpy as np
 from allennlp.nn import util
 from transformers import BertModel, XLNetModel, XLNetForSequenceClassification, BertForSequenceClassification
+from transformers import BertConfig
 
 
 class FC(nn.Module):
@@ -382,26 +383,14 @@ class Baseline2(nn.Module):
             outputs = self.biflow(**kwargs)
             #outputs = self.attention(**kwargs)
             return self.classifier(outputs[:, 0])
-            """
-            # Guided Attention
-            output = self.GA(**kwargs)
-            scores = self.SA(output).squeeze()
-            x_mask = (1 - kwargs['x_mask']).type(torch.bool)
-            scores = scores.masked_fill(x_mask, 1e-9)
-            att = torch.softmax(scores, -1)
-            # Summarize over the outputs
-            pooled_output = torch.sum(att.unsqueeze(-1) * output, 1)
-            outputs = self.CLASSIFIER(pooled_output)
-            return outputs
-            """
         else:
             raise NotImplementedError
 
 
 class GNN(nn.Module):
-    def __init__(self, dim, head, model_type, label_num, layers=3, dropout=0.1, attention='self'):
+    def __init__(self, dim, head, model_type, config, label_num, layers=3, dropout=0.1, attention='self'):
         super(GNN, self).__init__()
-        self.BASE = BertModel.from_pretrained(model_type)
+        self.BASE = BertModel.from_pretrained(model_type, config=config, from_tf=False, cache_dir='tmp/')
         if attention == 'self':
             self.biflow = SAEncoder(dim, head, 4 * dim, dropout, dim // head, layers)
         else:
@@ -425,3 +414,40 @@ class GNN(nn.Module):
             return self.classifier(outputs[:, 0])
         else:
             raise NotImplementedError
+
+
+class ControlledBert(BertModel):
+    def __init__(self, config):
+        super(ControlledBert, self).__init__(config)
+
+    def forward(self, i, j, attention_mask, hidden_states=None, input_ids=None, token_type_ids=None):
+        extended_attention_mask = attention_mask[:, None, :, :]
+        extended_attention_mask = extended_attention_mask.to(
+            dtype=next(self.parameters()).dtype)  # fp16 compatibility
+        extended_attention_mask = (1.0 - extended_attention_mask) * -10000.0
+
+        if i == 0:
+            hidden_states = self.embeddings(
+                input_ids=input_ids, position_ids=None, token_type_ids=token_type_ids, inputs_embeds=None)
+
+        for layer_module in self.encoder.layer[i:j]:
+            layer_outputs = layer_module(
+                hidden_states, extended_attention_mask, None, None, None)
+            hidden_states = layer_outputs[0]
+
+        return hidden_states
+
+
+class TabularBert(nn.Module):
+    def __init__(self, dim, head, model_type, config, label_num, dropout=0.1):
+        super(TabularBert, self).__init__()
+        self.BASE = ControlledBert.from_pretrained(model_type, config=config, from_tf=False, cache_dir='tmp/')
+        self.classifier = nn.Linear(dim, label_num)
+
+    def forward(self, layer, **kwargs):
+        if layer == 'intermediate':
+            outputs = self.BASE(**kwargs)
+            return outputs
+        else:
+            outputs = self.BASE(**kwargs)
+            return self.classifier(outputs[:, 0])
