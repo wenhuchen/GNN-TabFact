@@ -22,7 +22,7 @@ def parse_opt():
     parser = argparse.ArgumentParser()
     parser.add_argument('--dim', default=768, type=int, help="whether to train or test the model")
     parser.add_argument('--head', default=4, type=int, help="whether to train or test the model")
-    parser.add_argument('--epochs', default=50, type=int, help="whether to train or test the model")
+    parser.add_argument('--epochs', default=200, type=int, help="whether to train or test the model")
     parser.add_argument('--split', default=256, type=int, help="whether to train or test the model")
     parser.add_argument('--max_len', default=30, type=int, help="whether to train or test the model")
     parser.add_argument('--do_train', default=False, action="store_true", help="whether to train or test the model")
@@ -43,6 +43,7 @@ def parse_opt():
     parser.add_argument('--output_dir', default='models/number', type=str, help='model to use')
     parser.add_argument('--encoding', default='concat', type=str,
                         help='the type of table encoder; choose from concat|row|cell')
+    parser.add_argument('--max_num', default=500, type=int, help='model to use')
     parser.add_argument('--max_length', default=512, type=int, help='model to use')
     parser.add_argument('--max_batch_size', default=64, type=int, help='model to use')
     parser.add_argument('--id', default=1, type=int, help='model to use')
@@ -52,7 +53,7 @@ def parse_opt():
     return args
 
 
-dictionary = {str(_): _ for _ in range(1000)}
+dictionary = {str(_): _ for _ in range(2000)}
 i_dictionary = {v: k for k, v in dictionary.items()}
 
 
@@ -83,31 +84,25 @@ def forward_pass(examples, model):
     return logits, labels
 
 
-def gen_dataset(split='train'):
+def gen_dataset():
     people = ['dave', 'jesus', 'mary', 'nancy', 'sampson', 'cuba', 'sam']
     examples = []
-    if split == 'train':
-        total = 100000
-    else:
-        total = 10000
-
-    for i in range(total):
+    visited = set()
+    for i in range(300000):
         e = {}
         a = random.choice(people)
         b = random.choice(people)
-        if split == 'train':
-            c = random.randint(0, 100)
-            d = random.randint(0, 100)
-            ans = c + d
-        elif split == 'test':
-            c = random.randint(100, 200)
-            d = random.randint(100, 200)
-            ans = c + d
 
-        e['sent'] = '{} gets {} apples, while {} gets {} apples, how many apples do they have in total ?'.format(
-            a, c, b, d)
-        e['answer'] = str(ans)
-        examples.append(e)
+        c = random.randint(0, 500)
+        d = random.randint(0, 500)
+
+        if (c, d) not in visited:
+            ans = c + d
+            e['sent'] = 'how many apples do they have in total ? [SEP] {} gets {} apples, while {} gets {} apples'.format(
+                a, c, b, d)
+            e['answer'] = str(ans)
+            examples.append(e)
+            visited.add((c, d))
 
     return examples
 
@@ -126,7 +121,14 @@ if __name__ == "__main__":
         if not os.path.exists(args.output_dir):
             os.makedirs(args.output_dir)
 
-        examples = gen_dataset('train')
+        if args.load_from != '':
+            model.load_state_dict(torch.load(args.load_from))
+
+        examples = gen_dataset()
+
+        # Split the train/test set
+        train_examples = examples[:int(len(examples) * 0.9)]
+        test_examples = examples[int(len(examples) * 0.9):]
 
         writer = SummaryWriter(os.path.join(args.output_dir, 'events'))
 
@@ -134,7 +136,7 @@ if __name__ == "__main__":
             json.dump(args.__dict__, f, indent=2)
 
         optimizer = AdamW(model.parameters(), lr=args.lr_default, eps=1e-8)
-        t_total = len(examples) * args.epochs // args.max_batch_size
+        t_total = len(train_examples) * args.epochs // args.max_batch_size
 
         warm_up_steps = 0.1 * t_total
         scheduler = get_linear_schedule_with_warmup(
@@ -149,16 +151,16 @@ if __name__ == "__main__":
 
         global_step = 0
         for epoch_ in range(args.epochs):
-            random.shuffle(examples)
+            random.shuffle(train_examples)
             model.zero_grad()
             optimizer.zero_grad()
             print("starting the training of {}th epoch".format(epoch_))
 
             local_step = 0
 
-            for cur_idx in tqdm(range(0, len(examples), args.max_batch_size), desc="Iteration"):
-                cur_examples = [examples[_]
-                                for _ in range(cur_idx, min(cur_idx + args.max_batch_size, len(examples)))]
+            for cur_idx in tqdm(range(0, len(train_examples), args.max_batch_size), desc="Iteration"):
+                cur_examples = [train_examples[_]
+                                for _ in range(cur_idx, min(cur_idx + args.max_batch_size, len(train_examples)))]
 
                 if len(cur_examples) == 0:
                     break
@@ -202,8 +204,6 @@ if __name__ == "__main__":
                     local_step += 1
 
                 if (global_step + 1) % 2000 == 0:
-                    test_examples = gen_dataset('test')
-
                     model.eval()
                     with torch.no_grad():
                         correct, total = 0, 0
@@ -223,6 +223,5 @@ if __name__ == "__main__":
                     print('evaluation results (accuracy) = {}'.format(acc))
                     writer.add_scalar('val/acc', acc, global_step)
 
+                    torch.save(model.state_dict(), '{}/model_step{}.pt'.format(args.output_dir, global_step))
                     model.train()
-
-            torch.save(model.state_dict(), '{}/model_ep{}.pt'.format(args.output_dir, epoch_))

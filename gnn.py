@@ -57,7 +57,7 @@ def parse_opt():
     return args
 
 
-def forward_pass(table, example, model):
+def forward_pass(table, example, model, split):
     cols = table.columns
 
     statements = example[0]
@@ -65,13 +65,16 @@ def forward_pass(table, example, model):
     labels = example[2]
     title = example[3]
 
-    idxs = list(range(0, len(statements)))
-    random.shuffle(idxs)
+    if split == 'train':
+        idxs = list(range(0, len(statements)))
+        random.shuffle(idxs)
 
-    selected_idxs = idxs[:args.max_batch_size]
-    statements = [statements[_] for _ in selected_idxs]
-    sub_cols = [sub_cols[_] for _ in selected_idxs]
-    labels = [labels[_] for _ in selected_idxs]
+        selected_idxs = idxs[:args.max_batch_size]
+        statements = [statements[_] for _ in selected_idxs]
+        sub_cols = [sub_cols[_] for _ in selected_idxs]
+        labels = [labels[_] for _ in selected_idxs]
+    elif split == 'test':
+        pass
 
     tab_len = len(table)
     batch_size = len(statements)
@@ -291,7 +294,7 @@ if __name__ == "__main__":
                 table = pandas.read_csv('all_csv/{}'.format(f), '#')
                 table = table.head(40)
 
-                logits, labels = forward_pass(table, examples[f], model)
+                logits, labels = forward_pass(table, examples[f], model, 'train')
 
                 loss = cross_entropy(logits.view(-1, 2), labels)
                 writer.add_scalar('train/loss', loss, global_step)
@@ -341,7 +344,7 @@ if __name__ == "__main__":
                             table = pandas.read_csv('all_csv/{}'.format(f), '#')
                             table = table.head(40)
 
-                            logits, labels = forward_pass(table, test_examples[f], model)
+                            logits, labels = forward_pass(table, test_examples[f], model, 'test')
 
                             preds = torch.argmax(logits, -1)
 
@@ -374,13 +377,14 @@ if __name__ == "__main__":
 
         files = list(examples.keys())
 
+        predictions = {}
         with torch.no_grad():
             correct, total = 0, 0
             for f in tqdm(files, "Evaluation"):
                 table = pandas.read_csv('all_csv/{}'.format(f), '#')
                 table = table.head(40)
 
-                logits, labels = forward_pass(table, examples[f], model)
+                logits, labels = forward_pass(table, examples[f], model, 'test')
 
                 preds = torch.argmax(logits, -1)
 
@@ -391,5 +395,10 @@ if __name__ == "__main__":
 
                 acc = correct / total
                 #sys.stdout.write("finished {}/{}, the accuracy is {} \r".format(i, len(files), acc))
+                predictions[f] = {'statements': examples[f][0], 'labels': examples[f]
+                                  [-2], 'predictions': preds.data.cpu().numpy().tolist()}
 
             print("the final accuracy is {}".format(acc))
+
+        with open('predictions.json', 'w') as f:
+            json.dump(predictions, f, indent=2)
