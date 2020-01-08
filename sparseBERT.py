@@ -16,7 +16,7 @@ from tensorboardX import SummaryWriter
 from tqdm import tqdm, trange
 device = torch.device('cuda')
 
-SEPARATIONS = [0, 2, 5, 7, 12]
+SEPARATIONS = [0, 6, 5, 7, 12]
 
 
 def parse_opt():
@@ -49,7 +49,7 @@ def parse_opt():
     parser.add_argument('--with_title', default=False, action='store_true', help='model to use')
     parser.add_argument('--free_attention', default=False, action='store_true', help='model to use')
     parser.add_argument('--max_length', default=512, type=int, help='model to use')
-    parser.add_argument('--max_batch_size', default=12, type=int, help='model to use')
+    parser.add_argument('--max_batch_size', default=18, type=int, help='model to use')
     parser.add_argument('--id', default=1, type=int, help='model to use')
     args = parser.parse_args()
 
@@ -62,7 +62,7 @@ def paralell_table(table, cols):
     for i in range(len(table)):
         entry = table.iloc[i]
         for j, col in enumerate(table.columns):
-            text = 'in row {}, {} is {} .'.format(i + 1, col, entry[col])
+            text = '[CLS] in row {}, {} is {} .'.format(i + 1, col, entry[col])
             tmp = tokenizer.encode(text)
             if len(tmp) > args.max_len:
                 tmp = tmp[:args.max_len]
@@ -92,11 +92,11 @@ def distribute_encode(texts, masks, token_types, model, table, cols):
             # Inputs to the model
             inputs = {'input_ids': text_split.to(device), 'attention_mask': mask_split.unsqueeze(1).to(device),
                       'token_type_ids': token_type_split.to(device), 'i': SEPARATIONS[0], 'j': SEPARATIONS[1]}
-            tmp = model('intermediate', **inputs).mean(1)
+            tmp = model('intermediate', **inputs)[:, 0]  # .view(-1, args.hidden_dim)
             encoded.append(tmp)
 
     encoded = torch.cat(encoded, 0)
-    representation = encoded.view(len(table), len(cols), -1)
+    representation = encoded.view(len(table), -1, args.dim)
     return representation
 
 
@@ -121,6 +121,7 @@ def forward_pass(table, example, model):
 
     texts, masks, token_types = paralell_table(table, cols)
     cell_representation = distribute_encode(texts, masks, token_types, model, table, cols)
+    cell_representation = model('calibrate', x=cell_representation)
 
     hidden_dim = cell_representation.shape[-1]
     max_col = max([len(_) for _ in sub_cols])
@@ -134,9 +135,9 @@ def forward_pass(table, example, model):
             row_representation[idx, :, j, :] = cell_representation[:, col, :]
             row_mask[idx, :, j] = 1
         if args.with_title:
-            texts.append(tokenizer.encode('[CLS] ' + statement + ' [SEP] ' + title))
+            texts.append(tokenizer.encode('[CLS] ' + statement + ' [SEP] ' + title + ' [SEP] '))
         else:
-            texts.append(tokenizer.encode('[CLS] ' + statement))
+            texts.append(tokenizer.encode('[CLS] ' + statement + ' [SEP] '))
         idx += 1
 
     max_len = max([len(_) for _ in texts])
@@ -150,9 +151,14 @@ def forward_pass(table, example, model):
     texts = torch.tensor(texts).to(device)
     masks = torch.FloatTensor(masks).to(device)
     token_types = torch.tensor(token_types).to(device)
-    stat_representation = model('intermediate', i=SEPARATIONS[0], j=SEPARATIONS[3], input_ids=texts,
+    stat_representation = model('intermediate', i=SEPARATIONS[0], j=SEPARATIONS[1], input_ids=texts,
                                 attention_mask=masks.unsqueeze(1), token_type_ids=token_types)
 
+    # Ablation Study
+    table_representation = row_representation.view(batch_size, -1, hidden_dim).to(device)
+    representation = torch.cat([stat_representation, table_representation], 1)
+    full_mask = torch.cat([masks, row_mask.view(batch_size, -1).to(device)], 1).unsqueeze(1)
+    """
     row_representation = row_representation.view(batch_size * tab_len, max_col, hidden_dim).to(device)
     row_mask = row_mask.view(batch_size * tab_len, max_col).to(device)
     row_representation = model('intermediate', i=SEPARATIONS[1], j=SEPARATIONS[2], attention_mask=row_mask.unsqueeze(
@@ -181,9 +187,55 @@ def forward_pass(table, example, model):
         lower_mask = lower_mask.unsqueeze(1).repeat(1, tab_len * max_col, 1)
         # Concatenate the two masks
         full_mask = torch.cat([upper_mask, lower_mask], 1)
+    """
+    logits = model('final', i=SEPARATIONS[1], j=SEPARATIONS[4], attention_mask=full_mask, hidden_states=representation)
 
-    logits = model('final', i=SEPARATIONS[3], j=SEPARATIONS[4], attention_mask=full_mask, hidden_states=representation)
+    labels = torch.LongTensor(labels).to(device)
 
+    return logits, labels
+
+
+def forward_pass_only_stat(table, example, model):
+    cols = table.columns
+
+    statements = example[0]
+    sub_cols = example[1]
+    labels = example[2]
+    title = example[3]
+
+    idxs = list(range(0, len(statements)))
+    random.shuffle(idxs)
+
+    selected_idxs = idxs[:args.max_batch_size]
+    statements = [statements[_] for _ in selected_idxs]
+    sub_cols = [sub_cols[_] for _ in selected_idxs]
+    labels = [labels[_] for _ in selected_idxs]
+
+    tab_len = len(table)
+    batch_size = len(statements)
+
+    texts = []
+    idx = 0
+    for sub_col, statement in zip(sub_cols, statements):
+        if args.with_title:
+            texts.append(tokenizer.encode('[CLS] ' + statement + ' [SEP] ' + title + ' [SEP] '))
+        else:
+            texts.append(tokenizer.encode('[CLS] ' + statement + ' [SEP] '))
+        idx += 1
+
+    max_len = max([len(_) for _ in texts])
+    masks = []
+    token_types = []
+    for i in range(batch_size):
+        masks.append([1] * len(texts[i]) + [0] * (max_len - len(texts[i])))
+        texts[i] = texts[i] + [tokenizer.pad_token_id] * (max_len - len(texts[i]))
+        token_types.append([0] * max_len)
+
+    texts = torch.tensor(texts).to(device)
+    masks = torch.FloatTensor(masks).to(device)
+    token_types = torch.tensor(token_types).to(device)
+    logits = model('final', i=SEPARATIONS[0], j=SEPARATIONS[-1], input_ids=texts,
+                   attention_mask=masks.unsqueeze(1), token_type_ids=token_types)
     labels = torch.LongTensor(labels).to(device)
 
     return logits, labels
@@ -240,7 +292,7 @@ if __name__ == "__main__":
                 table = pandas.read_csv('all_csv/{}'.format(f), '#')
                 table = table.head(40)
 
-                logits, labels = forward_pass(table, examples[f], model)
+                logits, labels = forward_pass_only_stat(table, examples[f], model)
 
                 loss = cross_entropy(logits.view(-1, 2), labels)
                 writer.add_scalar('train/loss', loss, global_step)

@@ -365,10 +365,10 @@ if __name__ == "__main__":
         if args.simple:
             with open('data/simple_test_examples.json') as f:
                 examples = json.load(f)
-        if args.complex:
+        elif args.complex:
             with open('data/complex_test_examples.json') as f:
                 examples = json.load(f)
-        if args.complex:
+        else:
             with open('data/test_examples.json') as f:
                 examples = json.load(f)
 

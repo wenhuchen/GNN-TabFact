@@ -344,9 +344,9 @@ class Baseline(nn.Module):
 
 class Baseline1(nn.Module):
 
-    def __init__(self, dim, head, model_type, label_num, layers=4, dropout=0.1):
+    def __init__(self, dim, model_type, config, label_num):
         super(Baseline1, self).__init__()
-        self.BASE = BertModel.from_pretrained(model_type)
+        self.BASE = BertModel.from_pretrained(model_type, config=config, from_tf=False, cache_dir='tmp/')
         self.CLASSIFIER = nn.Linear(dim, label_num)
 
     def forward(self, forward_type, *args, **kwargs):
@@ -362,12 +362,7 @@ class Baseline2(nn.Module):
     def __init__(self, dim, head, model_type, label_num, layers=4, dropout=0.1):
         super(Baseline2, self).__init__()
         self.BASE = BertModel.from_pretrained(model_type)
-        #self.BASE = XLNetModel.from_pretrained(model_type)
-        #self.sequence_summary = SequenceSummary(self.BASE.config)
-        #self.FUSION = GAEncoder(dim, head, 4 * dim, dropout, dim // head, 3)
-        #self.embedding = nn.Embedding(2, dim)
         self.biflow = SAEncoder(dim, head, 4 * dim, dropout, dim // head, 3)
-        #self.attention = SAEncoder(dim, head, 4 * dim, dropout, dim // head, 3)
         self.classifier = nn.Linear(dim, label_num)
 
     def forward(self, forward_type, **kwargs):
@@ -442,11 +437,15 @@ class TabularBert(nn.Module):
     def __init__(self, dim, head, model_type, config, label_num, dropout=0.1):
         super(TabularBert, self).__init__()
         self.BASE = ControlledBert.from_pretrained(model_type, config=config, from_tf=False, cache_dir='tmp/')
+        self.CALIBRATE = nn.Linear(dim, dim)
         self.classifier = nn.Linear(dim, label_num)
 
     def forward(self, layer, **kwargs):
         if layer == 'intermediate':
             outputs = self.BASE(**kwargs)
+            return outputs
+        if layer == 'calibrate':
+            outputs = self.CALIBRATE(kwargs['x'])
             return outputs
         else:
             outputs = self.BASE(**kwargs)
