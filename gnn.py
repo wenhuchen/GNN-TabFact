@@ -28,6 +28,7 @@ def parse_opt():
     parser.add_argument('--max_len', default=30, type=int, help="whether to train or test the model")
     parser.add_argument('--do_train', default=False, action="store_true", help="whether to train or test the model")
     parser.add_argument('--do_test', default=False, action="store_true", help="whether to train or test the model")
+    parser.add_argument('--do_interact', default=False, action="store_true", help="whether to train or test the model")
     parser.add_argument('--simple', default=False, action="store_true", help="whether to train or test the model")
     parser.add_argument('--complex', default=False, action="store_true", help="whether to train or test the model")
     parser.add_argument('--fp16', default=False, action="store_true", help="whether to train or test the model")
@@ -57,7 +58,10 @@ def parse_opt():
     return args
 
 
-def forward_pass(table, example, model, split):
+def forward_pass(f, example, model, split):
+    table = pandas.read_csv('all_csv/{}'.format(f), '#')
+    table = table.head(40)
+
     cols = table.columns
 
     statements = example[0]
@@ -294,7 +298,7 @@ if __name__ == "__main__":
                 table = pandas.read_csv('all_csv/{}'.format(f), '#')
                 table = table.head(40)
 
-                logits, labels = forward_pass(table, examples[f], model, 'train')
+                logits, labels = forward_pass(f, examples[f], model, 'train')
 
                 loss = cross_entropy(logits.view(-1, 2), labels)
                 writer.add_scalar('train/loss', loss, global_step)
@@ -344,7 +348,7 @@ if __name__ == "__main__":
                             table = pandas.read_csv('all_csv/{}'.format(f), '#')
                             table = table.head(40)
 
-                            logits, labels = forward_pass(table, test_examples[f], model, 'test')
+                            logits, labels = forward_pass(f, test_examples[f], model, 'test')
 
                             preds = torch.argmax(logits, -1)
 
@@ -381,10 +385,7 @@ if __name__ == "__main__":
         with torch.no_grad():
             correct, total = 0, 0
             for f in tqdm(files, "Evaluation"):
-                table = pandas.read_csv('all_csv/{}'.format(f), '#')
-                table = table.head(40)
-
-                logits, labels = forward_pass(table, examples[f], model, 'test')
+                logits, labels = forward_pass(f, examples[f], model, 'test')
 
                 preds = torch.argmax(logits, -1)
 
@@ -402,3 +403,28 @@ if __name__ == "__main__":
 
         with open('predictions.json', 'w') as f:
             json.dump(predictions, f, indent=2)
+
+    if args.do_interact:
+        model.load_state_dict(torch.load(args.load_from))
+        model.eval()
+        with open('/data/wenhu/Table-Fact-Checking/data/table_to_page.json') as f:
+            table_to_page = json.load(f)
+
+        while True:
+            info = input('input the table id and cols: ')
+            tab_id, sub_cols = info.split(';')
+
+            title = table_to_page[tab_id][0]
+            print('table title: ', title)
+
+            statement = input('statement: ')
+
+            logits, labels = forward_pass(tab_id, [[statement], [json.loads(sub_cols)], [0], title], model, 'test')
+
+            probs = torch.softmax(logits, -1)[0][1].item()
+            #preds = torch.argmax(logits, -1)
+
+            # if preds.item() == 0:
+            print('the statement is {}\% correct!'.format(int(probs * 100)))
+            # else:
+            #    print('the statement is correct!')

@@ -29,7 +29,7 @@ def parse_opt():
     parser.add_argument('--do_test', default=False, action="store_true", help="whether to train or test the model")
     parser.add_argument('--do_tabfact', default=False, action="store_true", help="whether to train or test the model")
     parser.add_argument('--fp16', default=False, action="store_true", help="whether to train or test the model")
-    parser.add_argument("--fp16_opt_level", type=str, default="O1",
+    parser.add_argument("--fp16_opt_level", type=str, default="O3",
                         help="For fp16: Apex AMP optimization level selected in ['O0', 'O1', 'O2', and 'O3']."
                         "See details at https://nvidia.github.io/apex/amp.html")
     parser.add_argument('--lr_default', type=float, default=5e-6, help="whether to train or test the model")
@@ -146,6 +146,7 @@ if __name__ == "__main__":
         if args.fp16:
             from apex import amp
             model, optimizer = amp.initialize(model, optimizer, opt_level=args.fp16_opt_level)
+            model = torch.nn.DataParallel(model)
 
         cross_entropy = torch.nn.CrossEntropyLoss()
 
