@@ -31,8 +31,9 @@ Creating a folder for saving the model
 mkdir models
 ```
 
-Downloading the pre-trained model from Amazon S3
+Downloading the pre-trained model from Amazon S3, also link the folder of all_csv from TabFact dataset.
 ```
+ln -s TABFACT/data/all_csv .
 cd models
 wget https://gnntabfact.s3-us-west-2.amazonaws.com/gnn_fp16_numeric.zip
 unzip gnn_fp16_numeric.zip
