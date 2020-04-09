@@ -50,7 +50,6 @@ def parse_opt():
     parser.add_argument('--max_batch_size', default=12, type=int, help='model to use')
     parser.add_argument('--id', default=1, type=int, help='model to use')
     parser.add_argument('--no_numeric', default=False, action='store_true', help='model to use')
-    parser.add_argument('--attr', default=False, action='store_true', help='model to use')
     parser.add_argument('--attention', default='cross', type=str,
                         help='the attention used for interaction between statement and table')
     args = parser.parse_args()
@@ -196,8 +195,6 @@ def forward_pass(f, example, model, split):
             pre_trained = torch.load('masks/{}.bin'.format(f))
             greater_masks = pre_trained['g']
             smaller_masks = pre_trained['s']
-            m_matrix = pre_trained['m']  # model('emb', x=pre_trained['m'].long().to(device))
-            c_matrix = pre_trained['c']  # model('emb', x=pre_trained['c'].long().to(device))
 
             graph_masks_greater = torch.zeros(batch_size, max_len_col, tab_len, tab_len)
             graph_masks_smaller = torch.zeros(batch_size, max_len_col, tab_len, tab_len)
@@ -222,10 +219,6 @@ def forward_pass(f, example, model, split):
             graph_representation = graph_representation.transpose(1, 2).contiguous().view(
                 len(statements), -1, graph_representation.shape[-1])
 
-            if args.attr:
-                graph_representation_m = model('emb', x=graph_representation_m.view(batch_size, -1).long().to(device))
-                graph_representation_c = model('emb', x=graph_representation_c.view(batch_size, -1).long().to(device))
-                graph_representation = graph_representation + graph_representation_m + graph_representation_c
         else:
             graph_representation = graph_representation.view(batch_size, -1, graph_representation.shape[-1]).to(device)
 
@@ -426,5 +419,3 @@ if __name__ == "__main__":
 
             # if preds.item() == 0:
             print('the statement is {}\% correct!'.format(int(probs * 100)))
-            # else:
-            #    print('the statement is correct!')
