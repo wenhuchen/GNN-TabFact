@@ -18,6 +18,7 @@ This is the state-of-the-art model on [TabFact Dataset](https://tabfact.github.i
 
 # Performance
 We demonstrate our results as follows:
+
 | Model     | Dev  | Test |
 |-----------|------|------|
 | TableBERT | 66.1 | 65.1 |
