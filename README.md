@@ -1,5 +1,5 @@
 # GNN-TabFact
-This is the state-of-the-art models on [TabFact Dataset](https://tabfact.github.io/), we leverage the idea proposed in [NumGNN](https://arxiv.org/pdf/1910.06701.pdf) into the encoding of tabular data.
+This is the state-of-the-art model on [TabFact Dataset](https://tabfact.github.io/) dataset, we leverage the idea proposed in [NumGNN](https://arxiv.org/pdf/1910.06701.pdf) into the encoding of tabular data.
 
 
 # Requirements:
