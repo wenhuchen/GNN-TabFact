@@ -31,7 +31,7 @@ Creating a folder for saving the model
 mkdir models
 ```
 
-Downloading the pre-trained model from Amazon S3, also link the folder of all_csv from TabFact dataset.
+Downloading the pre-trained model from Amazon S3, also link the folder of [all_csv](https://github.com/wenhuchen/Table-Fact-Checking/tree/master/data/all_csv) from TabFact dataset.
 ```
 ln -s TABFACT/data/all_csv .
 cd models
