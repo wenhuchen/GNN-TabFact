@@ -34,15 +34,16 @@ mkdir models
 Downloading the pre-trained model from Amazon S3
 ```
 cd models
-wget 
+wget https://gnntabfact.s3-us-west-2.amazonaws.com/gnn_fp16_numeric.zip
+unzip gnn_fp16_numeric.zip
 ```
 
-Loading the trained GNN Model and reproduce the results:
+Loading the trained GNN Model and reproduce our results:
 ```
 CUDA_VISIBLE_DEVIES=0 python gnn.py --model bert-base-multilingual-uncased --do_test --encoding gnn --load_from models/gnn_fp16_numeric/model_ep4.pt
 ```
 
-Retrain your own GNN Model for TabFact:
+Retrain your own GNN Model on TabFact:
 ```
 CUDA_VISIBLE_DEVIES=0 python gnn.py --model bert-base-multilingual-uncased --do_train --encoding gnn --output_dir models/gnn_fp16_numeric_test --attention cross --lr_default 5e-6
 ```
