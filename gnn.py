@@ -10,7 +10,6 @@ import argparse
 from itertools import chain
 import sys
 import random
-import gc
 from transformers import AdamW, get_linear_schedule_with_warmup
 from tensorboardX import SummaryWriter
 from tqdm import tqdm, trange
