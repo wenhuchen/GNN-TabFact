@@ -232,7 +232,7 @@ def forward_pass(f, example, model, split):
         if args.attention == 'self':
             x_masks = torch.cat([torch.tensor(stat_masks), torch.tensor(table_masks)], 1).to(device)
             representation = torch.cat([stat_representation, graph_representation], 1)
-            inputs = {'x': representation.to(device), 'x_mask': (1 - x_masks).unsqueeze(1).unsqueeze(2).byte()}
+            inputs = {'x': representation.to(device), 'x_mask': (1 - x_masks).unsqueeze(1).unsqueeze(2).bool()}
             logits = model('sa', **inputs)
         elif args.attention == 'cross':
             inputs = {'x': stat_representation, 'x_mask': torch.tensor(stat_masks).to(device),
@@ -323,7 +323,7 @@ if __name__ == "__main__":
                     total_norm = total_norm ** (1. / 2)
                     writer.add_scalar('train/gradient_norm', total_norm, global_step)
 
-                    learning_rate_scalar = scheduler.get_lr()[0]
+                    learning_rate_scalar = scheduler.get_last_lr()[0]
                     writer.add_scalar('train/lr', learning_rate_scalar, global_step)
 
                     preds = (torch.argmax(logits, -1) == labels)

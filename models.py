@@ -236,7 +236,7 @@ class CREncoder(nn.Module):
         representation = torch.cat([x, y], 1) + emb_representation
 
         for layer in self.encoders:
-            representation = layer(representation, (1 - mask).unsqueeze(1).byte())
+            representation = layer(representation, (1 - mask).unsqueeze(1).bool())
 
         return representation
 
@@ -317,71 +317,6 @@ class TableEncoder(nn.Module):
             x = self.CLASSIFIER(x)
             return x
 
-
-class Baseline(nn.Module):
-
-    def __init__(self, dim, head, model_type, label_num, layers=4, dropout=0.1):
-        super(Baseline, self).__init__()
-        #self.BASE = BertModel.from_pretrained(model_type)
-        #self.BASE = XLNetModel.from_pretrained(model_type)
-        #self.sequence_summary = SequenceSummary(self.BASE.config)
-        #self.FUSION = GAEncoder(dim, head, 4 * dim, dropout, dim // head, 3)
-        #self.CLASSIFIER = nn.Linear(dim, label_num)
-        if 'xlnet' in model_type:
-            self.BASE = XLNetForSequenceClassification.from_pretrained(model_type, num_labels=label_num)
-        else:
-            self.BASE = BertForSequenceClassification.from_pretrained(model_type, num_labels=label_num)
-
-    def forward(self, forward_type, **kwargs):
-        if forward_type == 'cell':
-            #outputs = self.BASE(**kwargs)[0]
-            #pooled_output = self.sequence_summary(outputs)
-            # return self.CLASSIFIER(pooled_output)
-            return self.BASE(**kwargs)[0]
-        else:
-            raise NotImplementedError
-
-
-class Baseline1(nn.Module):
-
-    def __init__(self, dim, model_type, config, label_num):
-        super(Baseline1, self).__init__()
-        self.BASE = BertModel.from_pretrained(model_type, config=config, from_tf=False, cache_dir='tmp/')
-        self.CLASSIFIER = nn.Linear(dim, label_num)
-
-    def forward(self, forward_type, *args, **kwargs):
-        if forward_type == 'cell':
-            outputs = self.BASE(**kwargs)[1]
-            return self.CLASSIFIER(outputs)
-        else:
-            raise NotImplementedError
-
-
-class Baseline2(nn.Module):
-
-    def __init__(self, dim, head, model_type, label_num, layers=4, dropout=0.1):
-        super(Baseline2, self).__init__()
-        self.BASE = BertModel.from_pretrained(model_type)
-        self.biflow = SAEncoder(dim, head, 4 * dim, dropout, dim // head, 3)
-        self.classifier = nn.Linear(dim, label_num)
-
-    def forward(self, forward_type, **kwargs):
-        if forward_type == 'cell':
-            outputs = self.BASE(**kwargs)[1]
-            #pooled_output = self.sequence_summary(outputs)
-            return self.classifier(outputs)
-            # return self.BASE(**kwargs)[0]
-        elif forward_type == 'row':
-            outputs = self.BASE(**kwargs)
-            return outputs
-        elif forward_type == 'sa':
-            outputs = self.biflow(**kwargs)
-            #outputs = self.attention(**kwargs)
-            return self.classifier(outputs[:, 0])
-        else:
-            raise NotImplementedError
-
-
 class GNN(nn.Module):
     def __init__(self, dim, head, model_type, config, label_num, layers=3, dropout=0.1, attention='self'):
         super(GNN, self).__init__()
@@ -409,44 +344,3 @@ class GNN(nn.Module):
             return self.classifier(outputs[:, 0])
         else:
             raise NotImplementedError
-
-
-class ControlledBert(BertModel):
-    def __init__(self, config):
-        super(ControlledBert, self).__init__(config)
-
-    def forward(self, i, j, attention_mask, hidden_states=None, input_ids=None, token_type_ids=None):
-        extended_attention_mask = attention_mask[:, None, :, :]
-        extended_attention_mask = extended_attention_mask.to(
-            dtype=next(self.parameters()).dtype)  # fp16 compatibility
-        extended_attention_mask = (1.0 - extended_attention_mask) * -10000.0
-
-        if i == 0:
-            hidden_states = self.embeddings(
-                input_ids=input_ids, position_ids=None, token_type_ids=token_type_ids, inputs_embeds=None)
-
-        for layer_module in self.encoder.layer[i:j]:
-            layer_outputs = layer_module(
-                hidden_states, extended_attention_mask, None, None, None)
-            hidden_states = layer_outputs[0]
-
-        return hidden_states
-
-
-class TabularBert(nn.Module):
-    def __init__(self, dim, head, model_type, config, label_num, dropout=0.1):
-        super(TabularBert, self).__init__()
-        self.BASE = ControlledBert.from_pretrained(model_type, config=config, from_tf=False, cache_dir='tmp/')
-        self.CALIBRATE = nn.Linear(dim, dim)
-        self.classifier = nn.Linear(dim, label_num)
-
-    def forward(self, layer, **kwargs):
-        if layer == 'intermediate':
-            outputs = self.BASE(**kwargs)
-            return outputs
-        if layer == 'calibrate':
-            outputs = self.CALIBRATE(kwargs['x'])
-            return outputs
-        else:
-            outputs = self.BASE(**kwargs)
-            return self.classifier(outputs[:, 0])
