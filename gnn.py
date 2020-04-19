@@ -27,6 +27,8 @@ def parse_opt():
     parser.add_argument('--max_len', default=30, type=int, help="whether to train or test the model")
     parser.add_argument('--do_train', default=False, action="store_true", help="whether to train or test the model")
     parser.add_argument('--do_test', default=False, action="store_true", help="whether to train or test the model")
+    parser.add_argument('--do_prob', default=False, action="store_true", help="whether to train or test the model")
+    parser.add_argument('--do_verify', default=False, action="store_true", help="whether to train or test the model")    
     parser.add_argument('--do_interact', default=False, action="store_true", help="whether to train or test the model")
     parser.add_argument('--simple', default=False, action="store_true", help="whether to train or test the model")
     parser.add_argument('--complex', default=False, action="store_true", help="whether to train or test the model")
@@ -43,6 +45,7 @@ def parse_opt():
     parser.add_argument("--batch_size", default=16, type=int, help="Max gradient norm.")
     parser.add_argument('--model', default='bert-base-multilingual-uncased', type=str, help='model to use')
     parser.add_argument('--output_dir', default='models/baseline', type=str, help='model to use')
+    parser.add_argument('--verify_file', default=None, type=str, help='Input verify file')
     parser.add_argument('--encoding', default='concat', type=str,
                         help='the type of table encoder; choose from concat|row|cell')
     parser.add_argument('--max_length', default=512, type=int, help='model to use')
@@ -197,15 +200,15 @@ def forward_pass(f, example, model, split):
 
             graph_masks_greater = torch.zeros(batch_size, max_len_col, tab_len, tab_len)
             graph_masks_smaller = torch.zeros(batch_size, max_len_col, tab_len, tab_len)
-            graph_representation_m = torch.zeros(batch_size, tab_len, max_len_col)
-            graph_representation_c = torch.zeros(batch_size, tab_len, max_len_col)
+            #graph_representation_m = torch.zeros(batch_size, tab_len, max_len_col)
+            #graph_representation_c = torch.zeros(batch_size, tab_len, max_len_col)
             for i in range(batch_size):
                 for j in range(max_len_col):
                     if j < len(sub_cols[i]):
                         graph_masks_greater[i][j] = greater_masks[sub_cols[i][j]]
                         graph_masks_smaller[i][j] = smaller_masks[sub_cols[i][j]]
-                        graph_representation_m[i, :, j] = m_matrix[:, sub_cols[i][j]]
-                        graph_representation_c[i, :, j] = c_matrix[:, sub_cols[i][j]]
+                        #graph_representation_m[i, :, j] = m_matrix[:, sub_cols[i][j]]
+                        #graph_representation_c[i, :, j] = c_matrix[:, sub_cols[i][j]]
 
             graph_representation = graph_representation.transpose(
                 1, 2).contiguous().view(-1, tab_len, graph_representation.shape[-1])
@@ -395,6 +398,77 @@ if __name__ == "__main__":
 
         with open('predictions.json', 'w') as f:
             json.dump(predictions, f, indent=2)
+
+    if args.do_verify:
+        model.load_state_dict(torch.load(args.load_from))
+        model.eval()
+        with open(args.verify_file, 'r') as f:
+            examples = json.load(f)
+        print("loading file from {}".format(args.verify_file))
+        files = list(examples.keys())
+        
+        succ, fail = 0, 0
+        with torch.no_grad():
+            correct, total = 0, 0
+            for f in tqdm(files, "Evaluation"):
+                if isinstance(examples[f][0][0], str):
+                    r = []
+                    cols = []
+                    labels = []
+                    title = examples[f][0][2]
+                    for inst in examples[f]:
+                        r.append(inst[0])
+                        cols.append(inst[1])
+                        labels.append(-1)
+                    examples[f] = [r, cols, labels, title]
+                
+                logits, labels = forward_pass(f, examples[f], model, 'test')
+
+                preds = torch.argmax(logits, -1)
+
+                succ += torch.sum(preds).item()
+                total += preds.shape[0]
+
+            print("the final accuracy is {}".format(succ / total))
+
+    if args.do_prob:
+        model.load_state_dict(torch.load(args.load_from))
+        model.eval()
+        with open(args.verify_file, 'r') as f:
+            examples = json.load(f)
+        print("loading file from {}".format(args.verify_file))
+        files = list(examples.keys())
+        
+        succ, fail = 0, 0
+        with torch.no_grad():
+            correct, total = 0, 0
+            for f in tqdm(files, "Evaluation"):
+                r = []
+                cols = []
+                labels = []
+                title = examples[f][0]['pos'][2]
+
+                for inst in examples[f]:
+                    r.append(inst['pos'][0])
+                    cols.append(inst['pos'][1])
+                    labels.append(1)
+
+                    r.append(inst['neg'][0])
+                    cols.append(inst['neg'][1])
+                    labels.append(0)
+
+                examples[f] = [r, cols, labels, title]
+            
+                logits, labels = forward_pass(f, examples[f], model, 'test')
+
+                preds = torch.argmax(logits, -1)
+
+                succ += torch.sum(preds == labels).item()
+                total += preds.shape[0]
+                #succ += torch.sum(preds).item()
+                #total += preds.shape[0]
+
+            print("the final accuracy is {}".format(succ / total))        
 
     if args.do_interact:
         model.load_state_dict(torch.load(args.load_from))
