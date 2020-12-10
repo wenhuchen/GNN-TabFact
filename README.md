@@ -3,10 +3,10 @@ This is the state-of-the-art model on [TabFact Dataset](https://tabfact.github.i
 
 
 # Requirements:
-- [HuggingFace Transformers](https://github.com/huggingface/transformers)
+- [HuggingFace Transformers 2.6.0](https://github.com/huggingface/transformers)
 - tensorboardX
-- pandas
-
+- pandas 0.25.1
+- AllenNLP 0.9.0
 
 # Architecture
 - Cross-Attention Between Table and Statement to obtain the representation
